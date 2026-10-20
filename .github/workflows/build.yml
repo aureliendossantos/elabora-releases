@@ -156,9 +156,8 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
+      # The core's vendored three.js is committed: nothing to generate.
       - run: npm ci
-        working-directory: elabora-core
-      - run: npm run vendor
         working-directory: elabora-core
       - name: Install the app's packages
         run: bash ../releases/.github/scripts/quietly.sh install npm ci
