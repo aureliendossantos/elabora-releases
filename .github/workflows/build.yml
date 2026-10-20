@@ -1,0 +1,286 @@
+name: Build and publish
+
+# Builds Elabora's installers from the exact sources the app's « Release app » workflow names, and publishes them
+# here when asked. Started only by hand or by that workflow (workflow_dispatch, which needs write access to this
+# repository): never by a pull request, so that no fork ever runs with these secrets.
+#
+# These logs are public. The app's sources are private: they are fetched without printing anything about them,
+# every command that reads them writes to a log file instead (.github/scripts/quietly.sh), no test suite runs here
+# beyond the Windows installer's, nothing is cached, and nothing goes to Actions artifacts. The installers of a run
+# wait in a draft release, which only maintainers see, until the publication checks them and makes them public.
+#
+# Secrets: APP_READ_TOKEN (Contents read on the app only), SITE_DISPATCH_TOKEN (Actions write on the website only),
+# and the macOS signing secrets once release.config.json signs macOS. Uploads use this repository's GITHUB_TOKEN.
+# Variable: RELEASE_ENABLED=true allows publication.
+run-name: >-
+  ${{ inputs.notify_only && format('Elabora {0}: website notification', inputs.version)
+  || format('Elabora {0}: {1} ({2})', inputs.version, inputs.publish && 'build and publish' || 'build only', inputs.request || 'by hand') }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: App version (package.json of the app at that commit)
+        type: string
+        required: true
+      app_revision:
+        description: Full app commit SHA (not needed to notify the website)
+        type: string
+        required: false
+      core_revision:
+        description: Full core commit SHA, the app's core.lock.json (not needed to notify the website)
+        type: string
+        required: false
+      publish:
+        description: Publish after building (otherwise the installers stay in this run's draft, for maintainers)
+        type: boolean
+        default: false
+      notify_only:
+        description: Only start the website's « Publish release notes » for a version already public here
+        type: boolean
+        default: false
+      request:
+        description: Who asked (the app's workflow names its run)
+        type: string
+        required: false
+
+permissions: {}
+concurrency:
+  group: elabora-build
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
+    working-directory: elabora-app
+env:
+  VERSION: ${{ inputs.version }}
+  # This run's draft: the installers wait there, seen by maintainers only. Its tag is never created.
+  STAGING: build-${{ inputs.version }}-${{ github.run_id }}
+
+jobs:
+  preflight:
+    if: ${{ github.repository == 'aureliendossantos/elabora-releases' && !inputs.notify_only }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Check the request
+        working-directory: .
+        env:
+          APP_REVISION: ${{ inputs.app_revision }}
+          CORE_REVISION: ${{ inputs.core_revision }}
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::Invalid version."; exit 1; }
+          [[ "$APP_REVISION" =~ ^[0-9a-f]{40}$ && "$CORE_REVISION" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::app_revision and core_revision must be full commit SHAs."; exit 1; }
+      - uses: actions/checkout@v7
+        with:
+          path: releases
+          persist-credentials: false
+          sparse-checkout: .github
+      - uses: ./releases/.github/actions/app-sources
+        with:
+          token: ${{ secrets.APP_READ_TOKEN }}
+          revision: ${{ inputs.app_revision }}
+          tag: v${{ inputs.version }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      # The app's own preflight, which needs no installed packages: the record, the version, the core pin, the
+      # signing secrets the Mac build needs and, to publish, SITE_DISPATCH_TOKEN and RELEASE_ENABLED.
+      - name: Check the release before allocating Windows and Mac runners
+        env:
+          PUBLISH: ${{ inputs.publish }}
+          EXPECTED_VERSION: ${{ inputs.version }}
+          EXPECTED_CORE: ${{ inputs.core_revision }}
+          ELABORA_RELEASE_ENABLED: ${{ vars.RELEASE_ENABLED }}
+          SITE_DISPATCH_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: node scripts/release-preflight.ts releases
+      - name: Open this run's draft
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_REVISION: ${{ inputs.app_revision }}
+          CORE_REVISION: ${{ inputs.core_revision }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # Listed rather than looked up by tag: a draft's tag does not exist yet.
+          found=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq "map(select(.draft and .tag_name == \"$STAGING\")) | length")
+          if [ "$found" = 0 ]; then
+            gh release create "$STAGING" --repo "$GITHUB_REPOSITORY" --draft --title "Elabora $VERSION, build of run $GITHUB_RUN_ID (not a release)" \
+              --notes "Installers built from app $APP_REVISION and core $CORE_REVISION by $RUN_URL. A draft, seen by maintainers only: to try the build, not to share. A publication copies them to v$VERSION and deletes this draft." > /dev/null
+          fi
+
+  build:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: win-x64
+          - os: macos-latest
+            target: mac-arm64 mac-x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - run: git config --global core.autocrlf false
+        working-directory: .
+      - uses: actions/checkout@v7
+        with:
+          path: releases
+          persist-credentials: false
+          sparse-checkout: .github
+      - uses: ./releases/.github/actions/app-sources
+        with:
+          token: ${{ secrets.APP_READ_TOKEN }}
+          revision: ${{ inputs.app_revision }}
+      # The core is public: its own output may show.
+      - uses: actions/checkout@v7
+        with:
+          repository: aureliendossantos/elabora-core
+          ref: ${{ inputs.core_revision }}
+          path: elabora-core
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - run: npm ci
+        working-directory: elabora-core
+      - run: npm run vendor
+        working-directory: elabora-core
+      - name: Install the app's packages
+        run: bash ../releases/.github/scripts/quietly.sh install npm ci
+      # dist signs only the platforms release.config.json `signing` sets to true, and ignores these otherwise.
+      - name: Installers and updater metadata
+        env:
+          TARGET: ${{ matrix.target }}
+          ELABORA_RELEASE_REPOSITORY: ${{ github.repository }}
+          CSC_LINK: ${{ runner.os == 'macOS' && secrets.CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ runner.os == 'macOS' && secrets.CSC_KEY_PASSWORD || '' }}
+          APPLE_ID: ${{ runner.os == 'macOS' && secrets.APPLE_ID || '' }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ runner.os == 'macOS' && secrets.APPLE_TEAM_ID || '' }}
+        run: |
+          read -ra targets <<<"$TARGET"
+          bash ../releases/.github/scripts/quietly.sh installers npm run dist -- "${targets[@]}"
+      # After dist: the installer test needs the NSIS compiler that dist downloads into the electron-builder cache.
+      - name: Installer test
+        if: runner.os == 'Windows'
+        run: bash ../releases/.github/scripts/quietly.sh installer-test npm run test:installer
+      - name: Put the installers in this run's draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(release/Elabora-* release/latest*.yml)
+          [ "${#files[@]}" -gt 0 ] || { echo "::error::dist made no installer."; exit 1; }
+          gh release upload "$STAGING" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+          for file in "${files[@]}"; do echo "${file#release/}"; done
+          echo "The $RUNNER_OS installers of Elabora $VERSION are in the draft « Elabora $VERSION, build of run $GITHUB_RUN_ID » (maintainers only)." >> "$GITHUB_STEP_SUMMARY"
+      - name: Attach the logs to this run's draft (maintainers only)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LOG: log-${{ github.job }}-${{ runner.os }}-attempt-${{ github.run_attempt }}.txt
+        working-directory: .
+        run: |
+          shopt -s nullglob
+          logs=("$RUNNER_TEMP"/elabora-logs/*.log)
+          [ "${#logs[@]}" -gt 0 ] || exit 0
+          for log in "${logs[@]}"; do printf '\n=== %s\n' "$(basename "$log")"; cat "$log"; done > "$RUNNER_TEMP/$LOG"
+          gh release upload "$STAGING" "$RUNNER_TEMP/$LOG" --repo "$GITHUB_REPOSITORY" --clobber
+
+  # All platforms or none: the app's release.ts checks the version, the notes, every installer and the updater
+  # hashes, uploads them to the draft v<version>, then makes it the public release.
+  publish:
+    needs: build
+    if: ${{ inputs.publish }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: releases
+          persist-credentials: false
+          sparse-checkout: .github
+      - uses: ./releases/.github/actions/app-sources
+        with:
+          token: ${{ secrets.APP_READ_TOKEN }}
+          revision: ${{ inputs.app_revision }}
+      - uses: actions/checkout@v7
+        with:
+          repository: aureliendossantos/elabora-core
+          ref: ${{ inputs.core_revision }}
+          path: elabora-core
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - run: npm ci --ignore-scripts
+        working-directory: elabora-core
+      - name: Install the app's packages
+        run: bash ../releases/.github/scripts/quietly.sh install npm ci --ignore-scripts
+      - name: Take the installers from this run's draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$STAGING" --repo "$GITHUB_REPOSITORY" --dir build/release-assets \
+            --pattern 'Elabora-*' --pattern 'latest*.yml'
+      - name: Publish the complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ELABORA_RELEASE_ENABLED: ${{ vars.RELEASE_ENABLED }}
+        run: node scripts/release.ts publish --dir build/release-assets
+      - name: Delete this run's draft, now copied
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete "$STAGING" --repo "$GITHUB_REPOSITORY" --yes
+      - name: Attach the logs to this run's draft (maintainers only)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LOG: log-${{ github.job }}-attempt-${{ github.run_attempt }}.txt
+        working-directory: .
+        run: |
+          shopt -s nullglob
+          logs=("$RUNNER_TEMP"/elabora-logs/*.log)
+          [ "${#logs[@]}" -gt 0 ] || exit 0
+          for log in "${logs[@]}"; do printf '\n=== %s\n' "$(basename "$log")"; cat "$log"; done > "$RUNNER_TEMP/$LOG"
+          gh release upload "$STAGING" "$RUNNER_TEMP/$LOG" --repo "$GITHUB_REPOSITORY" --clobber
+
+  # After a publication, or alone (notify_only) to retry it: the website imports every public release here.
+  notify:
+    needs: publish
+    if: ${{ always() && github.repository == 'aureliendossantos/elabora-releases' && (inputs.notify_only || needs.publish.result == 'success') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Start the website's « Publish release notes »
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SITE_DISPATCH_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::Invalid version."; exit 1; }
+          [ -n "$SITE_DISPATCH_TOKEN" ] || { echo "::error::Missing elabora-releases secret SITE_DISPATCH_TOKEN."; exit 1; }
+          [ "$(gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = false ] \
+            || { echo "::error::v$VERSION is not public here."; exit 1; }
+          GH_TOKEN="$SITE_DISPATCH_TOKEN" gh api --method POST repos/aureliendossantos/elabora-site/actions/workflows/releases.yml/dispatches \
+            -f ref=main -f "inputs[version]=$VERSION"
+          echo "Requested the website update for $VERSION."

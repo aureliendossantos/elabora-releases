@@ -1,0 +1,47 @@
+name: App sources
+description: >
+  Fetches one commit of the private app, and its version tag when it exists, with a read-only token. Unlike
+  actions/checkout it prints nothing about the sources (no branch names, no commit subject) in these public logs,
+  and it keeps no credential on disk.
+inputs:
+  token:
+    description: APP_READ_TOKEN (Contents read on elabora-app only)
+    required: true
+  revision:
+    description: The full commit SHA to build
+    required: true
+  tag:
+    description: A tag to fetch too when it exists (v<version>), for the preflight's check
+    required: false
+    default: ''
+  path:
+    description: Where to put the sources
+    required: false
+    default: elabora-app
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        TOKEN: ${{ inputs.token }}
+        REVISION: ${{ inputs.revision }}
+        TAG: ${{ inputs.tag }}
+        DESTINATION: ${{ inputs.path }}
+      run: |
+        set -euo pipefail
+        [ -n "$TOKEN" ] || { echo "::error::Missing elabora-releases secret APP_READ_TOKEN."; exit 1; }
+        [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::The app revision must be a full commit SHA."; exit 1; }
+        basic=$(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\r\n')
+        echo "::add-mask::$basic"
+        # The header goes through the environment of these git commands only: not in .git/config, not in argv.
+        export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic"
+        git init --quiet "$DESTINATION"
+        cd "$DESTINATION"
+        git remote add origin https://github.com/aureliendossantos/elabora-app.git
+        git fetch --quiet --no-tags --depth 1 origin "$REVISION" 2>/dev/null \
+          || { echo "::error::Cannot fetch the app at $REVISION: check APP_READ_TOKEN (Contents read on elabora-app) and the commit."; exit 1; }
+        git -c advice.detachedHead=false checkout --quiet --detach FETCH_HEAD
+        if [ -n "$TAG" ] && git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+          git fetch --quiet --no-tags --depth 1 origin "refs/tags/$TAG:refs/tags/$TAG" 2>/dev/null
+        fi
+        echo "App sources at $REVISION."

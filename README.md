@@ -4,7 +4,14 @@ Public builds for the [Elabora](https://elabora.studio/) desktop app, available 
 
 The application source is maintained separately. The open core is at [elabora-core](https://github.com/aureliendossantos/elabora-core) and the website is [elabora.studio](https://elabora.studio).
 
-Release assets are uploaded to a draft first and published only after all supported platform builds finish.
+## How the installers are made
+
+The installers are built here, on GitHub-hosted runners, by the **Build and publish** workflow (`.github/workflows/build.yml`). It is started by Elabora's maintainers only, for an exact commit of the application and of the open core, and never by a pull request.
+
+- Windows builds the x64 installer and tests it; one macOS runner builds the Apple Silicon and Intel apps.
+- The application's source stays private: the workflow fetches the one commit it builds and keeps its build output out of the public logs.
+- The installers wait in a draft release until every platform has finished. Publication then checks the version, the release notes and every updater checksum, and makes the release public with `release.json`, `provenance.json` (the exact sources) and `SHA256SUMS`.
+- A published release is never replaced: a fix ships as a new version.
 
 ## Opening the beta
 
