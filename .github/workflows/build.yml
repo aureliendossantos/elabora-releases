@@ -161,6 +161,11 @@ jobs:
         working-directory: elabora-core
       - name: Install the app's packages
         run: bash ../releases/.github/scripts/quietly.sh install npm ci
+      - name: Apple Silicon media build prerequisites
+        if: runner.os == 'macOS'
+        run: |
+          test "$(uname -m)" = arm64
+          brew install cmake meson ninja pkgconf autoconf automake libtool
       # dist signs only the platforms release.config.json `signing` sets to true, and ignores these otherwise.
       - name: Installers and updater metadata
         env:
