@@ -1,0 +1,117 @@
+name: Native media tools
+
+# Standard public runners; private app sources and logs never enter public artifacts or caches.
+# Manual dispatch only. Diagnostics stay in a draft release, visible only to maintainers.
+on:
+  workflow_dispatch:
+    inputs:
+      app_revision:
+        description: Full private app commit SHA to validate
+        type: string
+        required: true
+      core_checks:
+        description: Also run the full core unit/e2e suites (beyond media tests)
+        type: boolean
+        default: false
+permissions: {}
+concurrency:
+  group: native-media
+  cancel-in-progress: false
+env:
+  STAGING: media-check-${{ github.run_id }}
+defaults:
+  run:
+    shell: bash
+jobs:
+  prepare:
+    if: github.repository == 'aureliendossantos/elabora-releases'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Create private diagnostics draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_REVISION: ${{ inputs.app_revision }}
+        run: |
+          [[ "$APP_REVISION" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::A full app commit SHA is required.'; exit 1; }
+          gh release create "$STAGING" --repo "$GITHUB_REPOSITORY" --draft \
+            --title "Native media checks $GITHUB_RUN_ID" \
+            --notes 'Private validation diagnostics. Not a product release; do not publish.' > /dev/null
+  native:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: mac-arm64
+            architecture: arm64
+          - runner: macos-15-intel
+            target: mac-x64
+            architecture: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: elabora-app
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: releases
+          persist-credentials: false
+          sparse-checkout: .github
+      - uses: ./releases/.github/actions/app-sources
+        with:
+          token: ${{ secrets.APP_READ_TOKEN }}
+          revision: ${{ inputs.app_revision }}
+      - name: Read public core pin
+        id: core
+        run: node -e "console.log('revision='+JSON.parse(require('node:fs').readFileSync('core.lock.json')).revision)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          repository: aureliendossantos/elabora-core
+          ref: ${{ steps.core.outputs.revision }}
+          path: elabora-core
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          architecture: ${{ matrix.architecture }}
+      - name: Install build tools
+        if: matrix.architecture == 'arm64'
+        run: brew install cmake meson ninja pkgconf autoconf automake libtool
+      - name: Install app and core dependencies
+        run: bash ../releases/.github/scripts/quietly.sh install bash scripts/ffmpeg-ci.sh '${{ matrix.target }}' install
+      - name: Build media tools and check cache reuse
+        run: bash ../releases/.github/scripts/quietly.sh media-build bash scripts/ffmpeg-ci.sh '${{ matrix.target }}' build
+      - name: Shared binary and 17-format checks
+        id: media
+        run: bash ../releases/.github/scripts/quietly.sh media-regression bash scripts/ffmpeg-ci.sh '${{ matrix.target }}' regression
+      - name: Core media tests and types
+        if: ${{ !cancelled() && steps.media.outcome == 'success' }}
+        run: bash ../releases/.github/scripts/quietly.sh core-media bash scripts/ffmpeg-ci.sh '${{ matrix.target }}' core-media
+      - name: App checks
+        id: app
+        if: ${{ !cancelled() && steps.media.outcome == 'success' }}
+        run: bash ../releases/.github/scripts/quietly.sh app-checks bash scripts/ffmpeg-ci.sh '${{ matrix.target }}' app
+      - name: Packaged signatures, media regression and app launch
+        if: ${{ !cancelled() && steps.media.outcome == 'success' && steps.app.outcome == 'success' }}
+        run: bash ../releases/.github/scripts/quietly.sh packaged-media bash scripts/ffmpeg-ci.sh '${{ matrix.target }}' package
+      - name: Optional full core suites
+        if: ${{ !cancelled() && inputs.core_checks && steps.media.outcome == 'success' }}
+        timeout-minutes: 8
+        run: bash ../releases/.github/scripts/quietly.sh core-all bash scripts/ffmpeg-ci.sh '${{ matrix.target }}' core-all
+      - name: Keep diagnostics private
+        if: always()
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/elabora-logs"
+          tar -czf "$RUNNER_TEMP/$TARGET-diagnostics.tar.gz" -C "$RUNNER_TEMP" elabora-logs
+          gh release upload "$STAGING" "$RUNNER_TEMP/$TARGET-diagnostics.tar.gz" --repo "$GITHUB_REPOSITORY" --clobber > /dev/null
