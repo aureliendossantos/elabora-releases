@@ -59,6 +59,9 @@ jobs:
             architecture: x64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
+    # macOS 15 images default to Xcode 16.4; the app's Icon Composer asset needs 26+.
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     permissions:
       contents: write
     defaults:
