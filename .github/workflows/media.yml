@@ -13,6 +13,10 @@ on:
         description: Also run the full core unit/e2e suites (beyond media tests)
         type: boolean
         default: false
+      core_revision:
+        description: Optional full development core SHA (otherwise the app release pin)
+        type: string
+        default: ''
 permissions: {}
 concurrency:
   group: native-media
@@ -34,8 +38,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           APP_REVISION: ${{ inputs.app_revision }}
+          CORE_REVISION: ${{ inputs.core_revision }}
         run: |
           [[ "$APP_REVISION" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::A full app commit SHA is required.'; exit 1; }
+          [[ -z "$CORE_REVISION" || "$CORE_REVISION" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::The core override must be a full commit SHA.'; exit 1; }
           gh release create "$STAGING" --repo "$GITHUB_REPOSITORY" --draft \
             --title "Native media checks $GITHUB_RUN_ID" \
             --notes 'Private validation diagnostics. Not a product release; do not publish.' > /dev/null
@@ -68,9 +74,11 @@ jobs:
         with:
           token: ${{ secrets.APP_READ_TOKEN }}
           revision: ${{ inputs.app_revision }}
-      - name: Read public core pin
+      - name: Read exact public core revision
         id: core
-        run: node -e "console.log('revision='+JSON.parse(require('node:fs').readFileSync('core.lock.json')).revision)" >> "$GITHUB_OUTPUT"
+        env:
+          CORE_REVISION: ${{ inputs.core_revision }}
+        run: node -e "console.log('revision='+(process.env.CORE_REVISION || JSON.parse(require('node:fs').readFileSync('core.lock.json')).revision))" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
         with:
           repository: aureliendossantos/elabora-core
