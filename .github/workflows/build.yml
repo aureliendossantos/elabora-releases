@@ -84,6 +84,10 @@ jobs:
           token: ${{ secrets.APP_READ_TOKEN }}
           revision: ${{ inputs.app_revision }}
           tag: v${{ inputs.version }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.22.0
+          run_install: false
       - uses: actions/setup-node@v7
         with:
           node-version: 24
@@ -153,19 +157,31 @@ jobs:
           path: elabora-core
           persist-credentials: false
           fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.22.0
+          run_install: false
       - uses: actions/setup-node@v7
         with:
           node-version: 24
       # The core's vendored three.js is committed: nothing to generate.
-      - run: npm ci
+      - name: Install the pinned core dependencies
         working-directory: elabora-core
+        run: |
+          if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile; else npm ci; fi
       - name: Install the app's packages
-        run: bash ../releases/.github/scripts/quietly.sh install npm ci
+        run: |
+          if [ -f pnpm-lock.yaml ]; then
+            bash ../releases/.github/scripts/quietly.sh install pnpm install --frozen-lockfile
+          else
+            bash ../releases/.github/scripts/quietly.sh install npm ci
+          fi
       - name: Apple Silicon media build prerequisites
         if: runner.os == 'macOS'
         run: |
           test "$(uname -m)" = arm64
           brew install cmake meson ninja pkgconf autoconf automake libtool
+      # npm run is also valid after pnpm installs; retain it for older pinned app revisions.
       # dist signs only the platforms release.config.json `signing` sets to true, and ignores these otherwise.
       - name: Installers and updater metadata
         env:
@@ -232,13 +248,24 @@ jobs:
           ref: ${{ inputs.core_revision }}
           path: elabora-core
           persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.22.0
+          run_install: false
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-      - run: npm ci --ignore-scripts
+      - name: Install the pinned core dependencies
         working-directory: elabora-core
+        run: |
+          if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile --ignore-scripts; else npm ci --ignore-scripts; fi
       - name: Install the app's packages
-        run: bash ../releases/.github/scripts/quietly.sh install npm ci --ignore-scripts
+        run: |
+          if [ -f pnpm-lock.yaml ]; then
+            bash ../releases/.github/scripts/quietly.sh install pnpm install --frozen-lockfile
+          else
+            bash ../releases/.github/scripts/quietly.sh install npm ci
+          fi --ignore-scripts
       - name: Take the installers from this run's draft
         env:
           GH_TOKEN: ${{ github.token }}
