@@ -262,10 +262,10 @@ jobs:
       - name: Install the app's packages
         run: |
           if [ -f pnpm-lock.yaml ]; then
-            bash ../releases/.github/scripts/quietly.sh install pnpm install --frozen-lockfile
+            bash ../releases/.github/scripts/quietly.sh install pnpm install --frozen-lockfile --ignore-scripts
           else
-            bash ../releases/.github/scripts/quietly.sh install npm ci
-          fi --ignore-scripts
+            bash ../releases/.github/scripts/quietly.sh install npm ci --ignore-scripts
+          fi
       - name: Take the installers from this run's draft
         env:
           GH_TOKEN: ${{ github.token }}
