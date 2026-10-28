@@ -153,14 +153,18 @@ jobs:
           path: elabora-core
           persist-credentials: false
           fetch-depth: 0
+      # pnpm at the version the app's package.json names; the core names the same.
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: elabora-app/package.json
       - uses: actions/setup-node@v7
         with:
           node-version: 24
       # The core's vendored three.js is committed: nothing to generate.
-      - run: npm ci
+      - run: pnpm install --frozen-lockfile
         working-directory: elabora-core
       - name: Install the app's packages
-        run: bash ../releases/.github/scripts/quietly.sh install npm ci
+        run: bash ../releases/.github/scripts/quietly.sh install pnpm install --frozen-lockfile
       - name: Apple Silicon media build prerequisites
         if: runner.os == 'macOS'
         run: |
@@ -178,11 +182,11 @@ jobs:
           APPLE_TEAM_ID: ${{ runner.os == 'macOS' && secrets.APPLE_TEAM_ID || '' }}
         run: |
           read -ra targets <<<"$TARGET"
-          bash ../releases/.github/scripts/quietly.sh installers npm run dist -- "${targets[@]}"
+          bash ../releases/.github/scripts/quietly.sh installers pnpm run dist -- "${targets[@]}"
       # After dist: the installer test needs the NSIS compiler that dist downloads into the electron-builder cache.
       - name: Installer test
         if: runner.os == 'Windows'
-        run: bash ../releases/.github/scripts/quietly.sh installer-test npm run test:installer
+        run: bash ../releases/.github/scripts/quietly.sh installer-test pnpm run test:installer
       - name: Put the installers in this run's draft
         env:
           GH_TOKEN: ${{ github.token }}
@@ -232,13 +236,16 @@ jobs:
           ref: ${{ inputs.core_revision }}
           path: elabora-core
           persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: elabora-app/package.json
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-      - run: npm ci --ignore-scripts
+      - run: pnpm install --frozen-lockfile --ignore-scripts
         working-directory: elabora-core
       - name: Install the app's packages
-        run: bash ../releases/.github/scripts/quietly.sh install npm ci --ignore-scripts
+        run: bash ../releases/.github/scripts/quietly.sh install pnpm install --frozen-lockfile --ignore-scripts
       - name: Take the installers from this run's draft
         env:
           GH_TOKEN: ${{ github.token }}

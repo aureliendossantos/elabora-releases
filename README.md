@@ -11,6 +11,7 @@ The installers are built here, on GitHub-hosted runners, by the **Build and publ
 - Windows builds the x64 installer and tests it; one macOS runner builds the Apple Silicon and Intel apps.
 - The application's source stays private: the workflow fetches the one commit it builds and keeps its build output out of the public logs.
 - The installers wait in a draft release until every platform has finished. Publication then checks the version, the release notes and every updater checksum, and makes the release public with `release.json`, `provenance.json` (the exact sources) and `SHA256SUMS`.
+- Both checkouts install with pnpm, from their `pnpm-lock.yaml`. Sources from before the switch to pnpm (app 0.2.0 and older) build with the workflow of commit 785a4d2: dispatch it from a branch made there.
 - A published release is never replaced: a fix ships as a new version.
 
 ## Opening the beta
