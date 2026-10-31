@@ -7,7 +7,9 @@ name: Build and publish
 # These logs are public. The app's sources are private: they are fetched without printing anything about them,
 # every command that reads them writes to a log file instead (.github/scripts/quietly.sh), no test suite runs here
 # beyond the Windows installer's, nothing is cached, and nothing goes to Actions artifacts. The installers of a run
-# wait in a draft release, which only maintainers see, until the publication checks them and makes them public.
+# wait in a draft release, which only maintainers see, until the publication checks them and makes them public. The
+# module templates' previews wait there too (templates.tgz), rendered once for both builds; the publication takes
+# only the installers.
 #
 # Secrets: APP_READ_TOKEN (Contents read on the app only), SITE_DISPATCH_TOKEN (Actions write on the website only),
 # APP_ACTIONS_TOKEN (Actions write on the app only: after a publication, it asks the app to tag its sources), and the
@@ -119,8 +121,65 @@ jobs:
               --notes "Installers built from app $APP_REVISION and core $CORE_REVISION by $RUN_URL. A draft, seen by maintainers only: to try the build, not to share. A publication copies them to v$VERSION and deletes this draft." > /dev/null
           fi
 
-  build:
+  # The module templates with their previews (stills and a loop of each, in each language), rendered once in Chrome
+  # on the Mac runner: on Windows' software rendering they took the build past its time limit. Into this run's draft,
+  # where both builds take them (dist checks they are every template of the core's commit).
+  previews:
     needs: preflight
+    runs-on: macos-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: releases
+          persist-credentials: false
+          sparse-checkout: .github
+      - uses: ./releases/.github/actions/app-sources
+        with:
+          token: ${{ secrets.APP_READ_TOKEN }}
+          revision: ${{ inputs.app_revision }}
+      - uses: actions/checkout@v7
+        with:
+          repository: aureliendossantos/elabora-core
+          ref: ${{ inputs.core_revision }}
+          path: elabora-core
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: elabora-app/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile
+        working-directory: elabora-core
+      - name: Install the app's packages
+        run: bash ../releases/.github/scripts/quietly.sh install pnpm install --frozen-lockfile
+      - name: Render the templates' previews
+        run: bash ../releases/.github/scripts/quietly.sh previews node scripts/templates.ts
+      - name: Put them in this run's draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          COPYFILE_DISABLE=1 tar -czf build/templates.tgz -C build templates
+          gh release upload "$STAGING" build/templates.tgz --repo "$GITHUB_REPOSITORY" --clobber
+      - name: Attach the logs to this run's draft (maintainers only)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LOG: log-${{ github.job }}-${{ runner.os }}-attempt-${{ github.run_attempt }}.txt
+        working-directory: .
+        run: |
+          shopt -s nullglob
+          logs=("$RUNNER_TEMP"/elabora-logs/*.log)
+          [ "${#logs[@]}" -gt 0 ] || exit 0
+          for log in "${logs[@]}"; do printf '\n=== %s\n' "$(basename "$log")"; cat "$log"; done > "$RUNNER_TEMP/$LOG"
+          gh release upload "$STAGING" "$RUNNER_TEMP/$LOG" --repo "$GITHUB_REPOSITORY" --clobber
+
+  build:
+    needs: [preflight, previews]
     strategy:
       fail-fast: false
       matrix:
@@ -170,10 +229,19 @@ jobs:
         run: |
           test "$(uname -m)" = arm64
           brew install cmake meson ninja pkgconf autoconf automake libtool
+      # Relative paths: on Windows, tar would read a drive letter as a remote host.
+      - name: Take the templates' previews from this run's draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release download "$STAGING" --repo "$GITHUB_REPOSITORY" --pattern templates.tgz --dir build/rendered
+          tar -xzf build/rendered/templates.tgz -C build/rendered
       # dist signs only the platforms release.config.json `signing` sets to true, and ignores these otherwise.
       - name: Installers and updater metadata
         env:
           TARGET: ${{ matrix.target }}
+          ELABORA_TEMPLATES: build/rendered/templates
           ELABORA_RELEASE_REPOSITORY: ${{ github.repository }}
           CSC_LINK: ${{ runner.os == 'macOS' && secrets.CSC_LINK || '' }}
           CSC_KEY_PASSWORD: ${{ runner.os == 'macOS' && secrets.CSC_KEY_PASSWORD || '' }}
@@ -198,8 +266,9 @@ jobs:
           gh release upload "$STAGING" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
           for file in "${files[@]}"; do echo "${file#release/}"; done
           echo "The $RUNNER_OS installers of Elabora $VERSION are in the draft « Elabora $VERSION, build of run $GITHUB_RUN_ID » (maintainers only)." >> "$GITHUB_STEP_SUMMARY"
+      # Even when cancelled (the job's time limit): what the build had done by then.
       - name: Attach the logs to this run's draft (maintainers only)
-        if: failure()
+        if: always()
         env:
           GH_TOKEN: ${{ github.token }}
           LOG: log-${{ github.job }}-${{ runner.os }}-attempt-${{ github.run_attempt }}.txt
