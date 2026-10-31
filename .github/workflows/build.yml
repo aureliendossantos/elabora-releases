@@ -156,6 +156,13 @@ jobs:
         working-directory: elabora-core
       - name: Install the app's packages
         run: bash ../releases/.github/scripts/quietly.sh install pnpm install --frozen-lockfile
+      # The previews' stills and loops are made with the app's own ffmpeg, as dist makes them.
+      - name: Apple Silicon media build prerequisites
+        run: |
+          test "$(uname -m)" = arm64
+          brew install cmake meson ninja pkgconf autoconf automake libtool
+      - name: The app's ffmpeg
+        run: bash ../releases/.github/scripts/quietly.sh ffmpeg node scripts/ffmpeg.ts mac-arm64
       - name: Render the templates' previews
         run: bash ../releases/.github/scripts/quietly.sh previews node scripts/templates.ts
       - name: Put them in this run's draft
