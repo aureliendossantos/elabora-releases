@@ -146,7 +146,7 @@ jobs:
           ref: ${{ inputs.core_revision }}
           path: elabora-core
           persist-credentials: false
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           package_json_file: elabora-app/package.json
       - uses: actions/setup-node@v7
@@ -220,7 +220,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       # pnpm at the version the app's package.json names; the core names the same.
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           package_json_file: elabora-app/package.json
       - uses: actions/setup-node@v7
@@ -312,7 +312,7 @@ jobs:
           ref: ${{ inputs.core_revision }}
           path: elabora-core
           persist-credentials: false
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           package_json_file: elabora-app/package.json
       - uses: actions/setup-node@v7
